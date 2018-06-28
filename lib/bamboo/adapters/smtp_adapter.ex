@@ -39,7 +39,7 @@ defmodule Bamboo.SMTPAdapter do
   @required_configuration [:server, :port]
   @default_configuration %{
     tls: :if_available,
-    ssl: :false,
+    ssl: false,
     retries: 1,
     transport: :gen_smtp_client,
     auth: :if_available
@@ -55,11 +55,11 @@ defmodule Bamboo.SMTPAdapter do
       message = """
       There was a problem sending the email through SMTP.
 
-      The error is #{inspect reason}
+      The error is #{inspect(reason)}
 
       More detail below:
 
-      #{inspect detail}
+      #{inspect(detail)}
       """
 
       %SMTPError{message: message, raw: raw}
@@ -72,7 +72,7 @@ defmodule Bamboo.SMTPAdapter do
       |> to_gen_smtp_server_config
 
     email
-    |> Bamboo.Mailer.normalize_addresses
+    |> Bamboo.Mailer.normalize_addresses()
     |> to_gen_smtp_message
     |> config[:transport].send_blocking(gen_smtp_config)
     |> handle_response
@@ -91,138 +91,156 @@ defmodule Bamboo.SMTPAdapter do
   defp handle_response({:error, reason, detail}) do
     raise SMTPError, {reason, detail}
   end
+
   defp handle_response(_) do
     :ok
   end
 
-  defp add_bcc(body, %Bamboo.Email{bcc: recipients}) do
-    add_smtp_header_line(body, :bcc, format_email_as_string(recipients, :bcc))
+  defp add_bcc(%Bamboo.Email{bcc: recipients}) do
+    add_smtp_header_line(:bcc, format_email_as_string(recipients, :bcc))
   end
 
-  defp add_cc(body, %Bamboo.Email{cc: recipients}) do
-    add_smtp_header_line(body, :cc, format_email_as_string(recipients, :cc))
+  defp add_cc(%Bamboo.Email{cc: recipients}) do
+    add_smtp_header_line(:cc, format_email_as_string(recipients, :cc))
   end
 
-  defp add_custom_header(body, {key, value}) do
-    add_smtp_header_line(body, key, value)
+  defp add_custom_header({key, value}) do
+    add_smtp_header_line(key, value)
   end
 
-  defp add_custom_headers(body, %Bamboo.Email{headers: headers}) do
-    Enum.reduce(headers, body, &add_custom_header(&2, &1))
+  defp add_custom_headers(%Bamboo.Email{headers: headers}) do
+    headers
+    |> Enum.into([])
+    |> List.foldr([], &[add_custom_header(&1) | &2])
   end
 
-  defp add_ending_header(body) do
-    add_smtp_line(body, "")
+  defp add_ending_header() do
+    add_smtp_line("")
   end
 
-  defp add_ending_multipart(body, delimiter) do
-    add_smtp_line(body, "--#{delimiter}--")
+  defp add_ending_multipart(delimiter) do
+    add_smtp_line(["--", delimiter, "--"])
   end
 
-  defp add_html_body(body, %Bamboo.Email{html_body: html_body}, _multi_part_delimiter)
-  when html_body == nil do
-    body
-  end
-  defp add_html_body(body, %Bamboo.Email{html_body: html_body}, multi_part_delimiter) do
-    body
-    |> add_multipart_delimiter(multi_part_delimiter)
-    |> add_smtp_header_line("Content-Type", "text/html;charset=UTF-8")
-    |> add_smtp_line("")
-    |> add_smtp_line(html_body)
+  defp add_html_body(%Bamboo.Email{html_body: html_body}, _multi_part_delimiter)
+       when html_body == nil do
+    []
   end
 
-  defp add_from(body, %Bamboo.Email{from: from}) do
-    add_smtp_header_line(body, :from, format_email_as_string(from, :from))
+  defp add_html_body(%Bamboo.Email{html_body: html_body}, multi_part_delimiter) do
+    [
+      add_multipart_delimiter(multi_part_delimiter),
+      add_smtp_header_line("Content-Type", "text/html;charset=UTF-8"),
+      add_smtp_line(""),
+      add_smtp_line(html_body)
+    ]
   end
 
-  defp add_mime_header(body) do
-    add_smtp_header_line(body, "MIME-Version", "1.0")
+  defp add_from(%Bamboo.Email{from: from}) do
+    add_smtp_header_line(:from, format_email_as_string(from, :from))
   end
 
-  defp add_multipart_delimiter(body, delimiter) do
-    add_smtp_line(body, "--#{delimiter}")
+  defp add_mime_header() do
+    add_smtp_header_line("MIME-Version", "1.0")
   end
 
-  defp add_multipart_header(body, delimiter) do
-    add_smtp_header_line(body, "Content-Type", ~s(multipart/alternative; boundary="#{delimiter}"))
+  defp add_multipart_delimiter(delimiter) do
+    add_smtp_line(["--", delimiter])
   end
 
-  defp add_multipart_mixed_header(body, delimiter) do
-    add_smtp_header_line(body, "Content-Type", ~s(multipart/mixed; boundary="#{delimiter}"))
+  defp add_multipart_header(delimiter) do
+    add_smtp_header_line("Content-Type", ["multipart/alternative; boundary=\"", delimiter, "\""])
   end
 
-  defp add_smtp_header_line(body, type, content) when is_list(content) do
-    Enum.reduce(content, body, &add_smtp_header_line(&2, type, &1))
-  end
-  defp add_smtp_header_line(body, type, content) when is_atom(type) do
-    add_smtp_header_line(body, String.capitalize(to_string(type)), content)
-  end
-  defp add_smtp_header_line(body, type, content) when is_binary(type) do
-    add_smtp_line(body, "#{type}: #{content}")
+  defp add_multipart_mixed_header(delimiter) do
+    add_smtp_header_line("Content-Type", ["multipart/mixed; boundary=\"", delimiter, "\""])
   end
 
-  defp add_smtp_line(body, content), do: body <> content <> "\r\n"
-
-  defp add_subject(body, %Bamboo.Email{subject: subject}) when is_nil(subject) do
-    add_smtp_header_line(body, :subject, "")
+  defp add_smtp_header_line(type, content) when is_atom(type) do
+    add_smtp_header_line(String.capitalize(to_string(type)), content)
   end
-  defp add_subject(body, %Bamboo.Email{subject: subject}) do
-    add_smtp_header_line(body, :subject, rfc822_encode(subject))
+
+  defp add_smtp_header_line(type, content) when is_binary(type) do
+    add_smtp_line([type, ": ", content])
+  end
+
+  defp add_smtp_line(content), do: [content, "\r\n"]
+
+  defp add_subject(%Bamboo.Email{subject: subject}) when is_nil(subject) do
+    add_smtp_header_line(:subject, "")
+  end
+
+  defp add_subject(%Bamboo.Email{subject: subject}) do
+    add_smtp_header_line(:subject, rfc822_encode(subject))
   end
 
   defp rfc822_encode(content) do
-    "=?UTF-8?B?#{Base.encode64(content)}?="
+    ["=?UTF-8?B?", Base.encode64(content), "?="]
   end
 
-  defp add_text_body(body, %Bamboo.Email{text_body: text_body}, _multi_part_delimiter)
-  when text_body == nil do
-    body
-  end
-  defp add_text_body(body, %Bamboo.Email{text_body: text_body}, multi_part_delimiter) do
-    body
-    |> add_multipart_delimiter(multi_part_delimiter)
-    |> add_smtp_header_line("Content-Type", "text/plain;charset=UTF-8")
-    |> add_smtp_line("")
-    |> add_smtp_line(text_body)
+  defp add_text_body(%Bamboo.Email{text_body: text_body}, _multi_part_delimiter)
+       when text_body == nil do
+    []
   end
 
-  defp add_attachment_header(body, attachment) do
-    << random :: size(32) >> = :crypto.strong_rand_bytes(4)
-    body
-    |> add_smtp_line("Content-Type: #{attachment.content_type}; name=\"#{attachment.filename}\"")
-    |> add_smtp_line("Content-Disposition: attachment; filename=\"#{attachment.filename}\"")
-    |> add_smtp_line("Content-Transfer-Encoding: base64")
-    |> add_smtp_line("X-Attachment-Id: #{random}")
+  defp add_text_body(%Bamboo.Email{text_body: text_body}, multi_part_delimiter) do
+    [
+      add_multipart_delimiter(multi_part_delimiter),
+      add_smtp_header_line("Content-Type", "text/plain;charset=UTF-8"),
+      add_smtp_line(""),
+      add_smtp_line(text_body)
+    ]
   end
 
-  defp add_attachment_body(body, data) do
+  defp add_attachment_header(attachment) do
+    <<random::size(32)>> = :crypto.strong_rand_bytes(4)
+
+    [
+      add_smtp_line([
+        "Content-Type: ",
+        attachment.content_type,
+        "; name=\"",
+        attachment.filename,
+        "\""
+      ]),
+      add_smtp_line(["Content-Disposition: attachment; filename=\"", attachment.filename, "\""]),
+      add_smtp_line("Content-Transfer-Encoding: base64"),
+      add_smtp_line(["X-Attachment-Id: ", to_string(random)])
+    ]
+  end
+
+  defp add_attachment_body(data) do
     data =
       data
       |> Base.encode64()
       |> Stream.unfold(&String.split_at(&1, 76))
-      |> Enum.take_while(&(&1 != ""))
-      |> Enum.join("\r\n")
-    add_smtp_line(body, data)
+      |> Stream.take_while(&(&1 != ""))
+      |> Stream.map(&[&1, "\r\n"])
+      |> Enum.to_list()
+
+    add_smtp_line(data)
   end
 
-  defp add_attachment(nil, _), do: ""
+  defp add_attachment(nil, _), do: []
+
   defp add_attachment(attachment, multi_part_mixed_delimiter) do
-    ""
-    |> add_multipart_delimiter(multi_part_mixed_delimiter)
-    |> add_attachment_header(attachment)
-    |> add_smtp_line("")
-    |> add_attachment_body(attachment.data)
+    [
+      add_multipart_delimiter(multi_part_mixed_delimiter),
+      add_attachment_header(attachment),
+      add_smtp_line(""),
+      add_attachment_body(attachment.data)
+    ]
   end
 
-  defp add_attachments(body, %Bamboo.Email{attachments: nil}, _), do: body
-  defp add_attachments(body, %Bamboo.Email{attachments: attachments}, multi_part_mixed_delimiter) do
-    attachment_part =
-      attachments |> Enum.map(fn(attachment) -> add_attachment(attachment, multi_part_mixed_delimiter) end)
-    "#{body}#{attachment_part}"
+  defp add_attachments(%Bamboo.Email{attachments: nil}, _), do: []
+
+  defp add_attachments(%Bamboo.Email{attachments: attachments}, multi_part_mixed_delimiter) do
+    attachments
+    |> Enum.map(fn attachment -> add_attachment(attachment, multi_part_mixed_delimiter) end)
   end
 
-  defp add_to(body, %Bamboo.Email{to: recipients}) do
-    add_smtp_header_line(body, :to, format_email_as_string(recipients, :to))
+  defp add_to(%Bamboo.Email{to: recipients}) do
+    add_smtp_header_line(:to, format_email_as_string(recipients, :to))
   end
 
   defp aggregate_errors(config, key, errors) do
@@ -234,39 +252,44 @@ defmodule Bamboo.SMTPAdapter do
   defp apply_default_configuration({:ok, value}, _default, config) when value != nil do
     config
   end
+
   defp apply_default_configuration(_not_found_value, {key, default_value}, config) do
     Map.put_new(config, key, default_value)
   end
 
   defp generate_multi_part_delimiter do
-    << random1 :: size(32), random2 :: size(32), random3 :: size(32) >> = :crypto.strong_rand_bytes(12)
-    "----=_Part_#{random1}_#{random2}.#{random3}"
+    <<random1::size(32), random2::size(32), random3::size(32)>> = :crypto.strong_rand_bytes(12)
+    ["----=_Part_", to_string(random1), "_", to_string(random2), ".", to_string(random3)]
   end
 
   defp body(email = %Bamboo.Email{}) do
     multi_part_delimiter = generate_multi_part_delimiter()
     multi_part_mixed_delimiter = generate_multi_part_delimiter()
-    ""
-    |> add_subject(email)
-    |> add_from(email)
-    |> add_bcc(email)
-    |> add_cc(email)
-    |> add_to(email)
-    |> add_custom_headers(email)
-    |> add_mime_header
-    |> add_multipart_mixed_header(multi_part_mixed_delimiter)
-    |> add_ending_header
-    |> add_multipart_delimiter(multi_part_mixed_delimiter)
-    |> add_multipart_header(multi_part_delimiter)
-    |> add_ending_header
-    |> add_text_body(email, multi_part_delimiter)
-    |> add_html_body(email, multi_part_delimiter)
-    |> add_ending_multipart(multi_part_delimiter)
-    |> add_attachments(email, multi_part_mixed_delimiter)
-    |> add_ending_multipart(multi_part_mixed_delimiter)
+
+    [
+      add_subject(email),
+      add_from(email),
+      add_bcc(email),
+      add_cc(email),
+      add_to(email),
+      add_custom_headers(email),
+      add_mime_header(),
+      add_multipart_mixed_header(multi_part_mixed_delimiter),
+      add_ending_header(),
+      add_multipart_delimiter(multi_part_mixed_delimiter),
+      add_multipart_header(multi_part_delimiter),
+      add_ending_header(),
+      add_text_body(email, multi_part_delimiter),
+      add_html_body(email, multi_part_delimiter),
+      add_ending_multipart(multi_part_delimiter),
+      add_attachments(email, multi_part_mixed_delimiter),
+      add_ending_multipart(multi_part_mixed_delimiter)
+    ]
+    |> IO.iodata_to_binary()
   end
 
   defp build_error({:ok, value}, _key, errors) when value != nil, do: errors
+
   defp build_error(_not_found_value, key, errors) do
     ["Key #{key} is required for SMTP Adapter" | errors]
   end
@@ -278,10 +301,11 @@ defmodule Bamboo.SMTPAdapter do
   end
 
   defp format_email({nil, email}, _format), do: email
-  defp format_email({name, email}, true), do: "#{rfc822_encode(name)} <#{email}>"
+  defp format_email({name, email}, true), do: [rfc822_encode(name), " <", email, ">"]
   defp format_email({_name, email}, false), do: email
+
   defp format_email(emails, format) when is_list(emails) do
-    Enum.map(emails, &format_email(&1, format))
+    List.foldr(emails, [], &[format_email(&1, format) | &2])
   end
 
   defp format_email(email, type, format \\ true) do
@@ -290,17 +314,15 @@ defmodule Bamboo.SMTPAdapter do
     |> format_email(format)
   end
 
-  defp format_email_as_string(emails) when is_list(emails) do
-    Enum.join(emails, ", ")
-  end
-  defp format_email_as_string(email) do
-    email
+  defp format_email_as_string(emails, type) when is_list(emails) do
+    emails
+    |> format_email(type)
+    |> Enum.intersperse(", ")
   end
 
   defp format_email_as_string(email, type) do
     email
     |> format_email(type)
-    |> format_email_as_string
   end
 
   defp from_without_format(%Bamboo.Email{from: from}) do
@@ -320,10 +342,11 @@ defmodule Bamboo.SMTPAdapter do
   end
 
   defp raise_on_missing_configuration([], config), do: config
+
   defp raise_on_missing_configuration(errors, config) do
     formatted_errors =
       errors
-      |> Enum.map(&("* #{&1}"))
+      |> Enum.map(&"* #{&1}")
       |> Enum.join("\n")
 
     raise ArgumentError, """
@@ -333,13 +356,13 @@ defmodule Bamboo.SMTPAdapter do
 
     They are required to make the SMTP adapter work. Here you configuration:
 
-    #{inspect config}
+    #{inspect(config)}
     """
   end
 
   defp to_without_format(email = %Bamboo.Email{}) do
     email
-    |> Bamboo.Email.all_recipients
+    |> Bamboo.Email.all_recipients()
     |> format_email(:to, false)
   end
 
@@ -354,75 +377,99 @@ defmodule Bamboo.SMTPAdapter do
   defp to_gen_smtp_server_config({:server, value}, config) when is_binary(value) do
     [{:relay, value} | config]
   end
+
   defp to_gen_smtp_server_config({:username, value}, config) when is_binary(value) do
     [{:username, value} | config]
   end
+
   defp to_gen_smtp_server_config({:password, value}, config) when is_binary(value) do
     [{:password, value} | config]
   end
+
   defp to_gen_smtp_server_config({:tls, "if_available"}, config) do
     [{:tls, :if_available} | config]
   end
+
   defp to_gen_smtp_server_config({:tls, "always"}, config) do
     [{:tls, :always} | config]
   end
+
   defp to_gen_smtp_server_config({:tls, "never"}, config) do
     [{:tls, :never} | config]
   end
+
   defp to_gen_smtp_server_config({:tls, value}, config) when is_atom(value) do
     [{:tls, value} | config]
   end
+
   defp to_gen_smtp_server_config({:allowed_tls_versions, value}, config) when is_binary(value) do
     [{:tls_options, [{:versions, string_to_tls_versions(value)}]} | config]
   end
+
   defp to_gen_smtp_server_config({:allowed_tls_versions, value}, config) when is_list(value) do
     [{:tls_options, [{:versions, value}]} | config]
   end
+
   defp to_gen_smtp_server_config({:port, value}, config) when is_binary(value) do
     [{:port, String.to_integer(value)} | config]
   end
+
   defp to_gen_smtp_server_config({:port, value}, config) when is_integer(value) do
     [{:port, value} | config]
   end
+
   defp to_gen_smtp_server_config({:ssl, "true"}, config) do
     [{:ssl, true} | config]
   end
+
   defp to_gen_smtp_server_config({:ssl, "false"}, config) do
     [{:ssl, false} | config]
   end
+
   defp to_gen_smtp_server_config({:ssl, value}, config) when is_boolean(value) do
     [{:ssl, value} | config]
   end
+
   defp to_gen_smtp_server_config({:retries, value}, config) when is_binary(value) do
     [{:retries, String.to_integer(value)} | config]
   end
+
   defp to_gen_smtp_server_config({:retries, value}, config) when is_integer(value) do
     [{:retries, value} | config]
   end
+
   defp to_gen_smtp_server_config({:hostname, value}, config) when is_binary(value) do
     [{:hostname, value} | config]
   end
+
   defp to_gen_smtp_server_config({:no_mx_lookups, "true"}, config) do
     [{:no_mx_lookups, true} | config]
   end
+
   defp to_gen_smtp_server_config({:no_mx_lookups, "false"}, config) do
     [{:no_mx_lookups, false} | config]
   end
+
   defp to_gen_smtp_server_config({:no_mx_lookups, value}, config) when is_boolean(value) do
     [{:no_mx_lookups, value} | config]
   end
+
   defp to_gen_smtp_server_config({:auth, "if_available"}, config) do
     [{:auth, :if_available} | config]
   end
+
   defp to_gen_smtp_server_config({:auth, "always"}, config) do
     [{:auth, :always} | config]
   end
+
   defp to_gen_smtp_server_config({:auth, value}, config) when is_atom(value) do
     [{:auth, value} | config]
   end
+
   defp to_gen_smtp_server_config({conf, {:system, var}}, config) do
     to_gen_smtp_server_config({conf, System.get_env(var)}, config)
   end
+
   defp to_gen_smtp_server_config({_key, _value}, config) do
     config
   end
